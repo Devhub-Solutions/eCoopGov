@@ -17,6 +17,8 @@ VARIABLE_PATTERN = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
 FOR_PATTERN = re.compile(r"\{%[-\s]*for\s+(\w+)\s+in\s+(\w+)\s*[-\s]*%\}")
 FILTER_PATTERN = re.compile(r"\{\{\s*\w+(?:\.\w+)+\s*\}\}")  # {{ item.field }}
 LOOP_FIELD_PATTERN = re.compile(r"\{\{\s*\w+\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
+# Index-based access: {{ hanh_khach_trai[0].ho_ten }} or {{ hanh_khach[0].ho_ten }}
+INDEX_ACCESS_PATTERN = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\[\d+\]\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
 
 
 def _merge_runs_in_paragraph(paragraph) -> str:
@@ -85,7 +87,20 @@ def parse_template(filepath: str | Path) -> dict:
         cols = set(pattern.findall(full_text))
         loop_field_details[collection] = cols
 
-    # Fields thường = tất cả vars - loop vars - loop collections
+    # Detect index-based list access: {{ hanh_khach_trai[0].ho_ten }}
+    index_collections: dict[str, set] = {}
+    for collection, field in INDEX_ACCESS_PATTERN.findall(full_text):
+        index_collections.setdefault(collection, set()).add(field)
+
+    # Merge index-based collections into loop_collections & field details
+    for collection, cols in index_collections.items():
+        loop_collections.add(collection)
+        if collection in loop_field_details:
+            loop_field_details[collection].update(cols)
+        else:
+            loop_field_details[collection] = cols
+
+    # Fields thường = tất cả vars - loop vars - loop collections - index collections
     regular_fields = all_vars - loop_vars - loop_collections
 
     # Build result
@@ -99,6 +114,7 @@ def parse_template(filepath: str | Path) -> dict:
             "key": collection,
             "loop_var": next((lv for lv, coll in loops if coll == collection), "item"),
             "columns": sorted(loop_field_details.get(collection, [])),
+            "access": "index" if collection in index_collections and collection not in {coll for _, coll in loops} else "loop",
         }
         for collection in sorted(loop_collections)
     ]

@@ -19,6 +19,7 @@ class TableMeta(BaseModel):
     loop_var: str = "item"
     columns: list[str] = []
     column_labels: dict[str, str] = {}
+    access: str = "loop"  # "loop" = {% for %} | "index" = list[0].field
 
 
 class TemplateMeta(BaseModel):

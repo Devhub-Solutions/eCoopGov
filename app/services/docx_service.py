@@ -6,10 +6,14 @@ import asyncio
 import shutil
 from pathlib import Path
 from docxtpl import DocxTemplate
+from jinja2 import Environment, ChainableUndefined
 from app.core.config import get_settings
 from app.core.logging import logger
 
 settings = get_settings()
+
+# Jinja2 env dùng ChainableUndefined: truy cập attribute/index trên undefined → chuỗi rỗng thay vì throw
+_jinja_env = Environment(undefined=ChainableUndefined)
 
 
 async def render_docx(template_path: str | Path, context: dict, output_path: str | Path) -> Path:
@@ -44,5 +48,5 @@ def _render_sync(template_path: Path, context: dict, output_path: Path):
 
     # Validation: kiểm tra context có đủ field không
     # docxtpl tự handle missing vars (render empty string)
-    doc.render(context)
+    doc.render(context, jinja_env=_jinja_env)
     doc.save(str(output_path))

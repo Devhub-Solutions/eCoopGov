@@ -68,7 +68,6 @@ async def render_async(
     )
     db.add(job)
     await db.flush()
-    await db.refresh(job)  # load server-default values (created_at)
 
     # Chạy background (production nên dùng Celery worker)
     background_tasks.add_task(_background_render, job.id, template_id, payload)
@@ -155,7 +154,10 @@ async def _do_render(template: Template, payload: RenderRequest) -> Path:
     temp_docx = settings.TEMP_DIR / f"{job_id}.docx"
 
     try:
-        await render_docx(template.filepath, payload.data, temp_docx)
+        # Normalize data trước khi render — fix lỗi paired list không đều
+        context = _normalize_context(payload.data)
+
+        await render_docx(template.filepath, context, temp_docx)
 
         if payload.output_format == "pdf":
             output_path = await convert_to_pdf(temp_docx, settings.OUTPUT_DIR)
@@ -167,6 +169,42 @@ async def _do_render(template: Template, payload: RenderRequest) -> Path:
 
     finally:
         temp_docx.unlink(missing_ok=True)
+
+
+def _normalize_context(data: dict) -> dict:
+    """
+    Tự động detect và pad các cặp list song song (dạng *_trai / *_phai)
+    để đảm bảo cùng độ dài — tránh lỗi 'list object has no element Undefined'.
+
+    Ví dụ: hanh_khach_trai + hanh_khach_phai → pad list ngắn hơn bằng dict rỗng.
+    """
+    result = dict(data)
+
+    # Tìm tất cả cặp key có suffix _trai / _phai
+    trai_keys = [k for k in result if k.endswith("_trai") and isinstance(result[k], list)]
+
+    for trai_key in trai_keys:
+        base   = trai_key[:-5]          # "hanh_khach"
+        phai_key = base + "_phai"
+
+        if phai_key not in result or not isinstance(result[phai_key], list):
+            continue
+
+        list_trai = result[trai_key]
+        list_phai = result[phai_key]
+        target_len = max(len(list_trai), len(list_phai))
+
+        if len(list_trai) == len(list_phai):
+            continue  # Đã bằng nhau, không cần xử lý
+
+        # Tạo empty record dựa theo keys của phần tử đầu tiên
+        sample = (list_trai or list_phai)[0] if (list_trai or list_phai) else {}
+        empty  = {k: "" for k in sample.keys()}
+
+        result[trai_key] = list_trai + [empty] * (target_len - len(list_trai))
+        result[phai_key] = list_phai + [empty] * (target_len - len(list_phai))
+
+    return result
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────

@@ -77,6 +77,7 @@ async def upload_template(
             loop_var=t["loop_var"],
             columns=t["columns"],
             column_labels={col: ai_labels.get(col, col) for col in t["columns"]},
+            access=t.get("access", "loop"),
         )
         for t in parsed["tables"]
     ]

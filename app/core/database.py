@@ -85,5 +85,13 @@ async def init_db():
     # Import models để SQLAlchemy biết các bảng cần tạo
     from app.models import fleet_models  # noqa: F401
     import functools
+    from sqlalchemy.exc import OperationalError
     async with engine.begin() as conn:
-        await conn.run_sync(functools.partial(Base.metadata.create_all, checkfirst=True))
+        try:
+            await conn.run_sync(functools.partial(Base.metadata.create_all, checkfirst=True))
+        except OperationalError as e:
+            # MySQL error 1050: "Table already exists" — safe to ignore in multi-worker startup
+            if "1050" in str(e.orig) or "already exists" in str(e.orig).lower():
+                pass
+            else:
+                raise
