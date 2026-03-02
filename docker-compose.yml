@@ -1,0 +1,71 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-rootpassword}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-docgen}
+      - MYSQL_USER=${MYSQL_USER:-docgen}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-docgenpassword}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    restart: unless-stopped
+    environment:
+      - PMA_HOST=db
+      - PMA_PORT=3306
+      - PMA_ARBITRARY=0
+    ports:
+      - "8080:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=mysql+aiomysql://${MYSQL_USER:-docgen}:${MYSQL_PASSWORD:-docgenpassword}@db:3306/${MYSQL_DATABASE:-docgen}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+      - AI_ENABLED=${AI_ENABLED:-true}
+      - MAX_CONCURRENT_RENDERS=${MAX_CONCURRENT_RENDERS:-10}
+      - RENDER_TIMEOUT_SECONDS=60
+      - DEBUG=${DEBUG:-false}
+    volumes:
+      - ./storage:/app/storage
+    ports:
+      - "8000:8000"   # Direct access (dev)
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    profiles:
+      - production  # docker compose --profile production up
+
+volumes:
+  mysql_data:

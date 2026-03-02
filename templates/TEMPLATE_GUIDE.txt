@@ -1,0 +1,97 @@
+HƯỚNG DẪN TẠO TEMPLATE WORD (Jinja2 Syntax)
+============================================
+
+File này mô tả cú pháp cần dùng trong file .docx
+
+──────────────────────────────────────────────
+PHẦN 1: SCALAR FIELDS (trường đơn)
+──────────────────────────────────────────────
+
+Ví dụ nội dung trong Word:
+
+    CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM
+
+    HỢP ĐỒNG LAO ĐỘNG
+    Số: {{ so_hop_dong }}
+
+    Hôm nay, ngày {{ ngay_ky }} tháng {{ thang_ky }} năm {{ nam_ky }}, tại {{ dia_diem }}
+
+    BÊN A (Người sử dụng lao động):
+    Tên công ty: {{ ten_cong_ty }}
+    Địa chỉ: {{ dia_chi_cong_ty }}
+    Đại diện bởi: {{ nguoi_dai_dien }}
+    Chức vụ: {{ chuc_vu_dai_dien }}
+
+    BÊN B (Người lao động):
+    Họ và tên: {{ ho_ten }}
+    Ngày sinh: {{ ngay_sinh }}
+    Số CCCD: {{ so_cccd }}
+    Địa chỉ: {{ dia_chi }}
+
+
+──────────────────────────────────────────────
+PHẦN 2: DYNAMIC TABLE (bảng lặp)
+──────────────────────────────────────────────
+
+Trong Word, tạo bảng với nội dung:
+
+    STT | Tên sản phẩm       | Số lượng      | Đơn giá       | Thành tiền
+    ────┼────────────────────┼───────────────┼───────────────┼──────────────
+    {% for item in danh_sach_san_pham %}
+    {{ loop.index }} | {{ item.ten_san_pham }} | {{ item.so_luong }} | {{ item.don_gia }} | {{ item.thanh_tien }}
+    {% endfor %}
+
+    TỔNG CỘNG: {{ tong_tien }}
+
+
+──────────────────────────────────────────────
+PHẦN 3: CONDITIONAL (điều kiện)
+──────────────────────────────────────────────
+
+    {% if co_phu_luc %}
+    * Kèm theo phụ lục: {{ ten_phu_luc }}
+    {% endif %}
+
+
+──────────────────────────────────────────────
+PHẦN 4: JSON DATA MẪU để gọi API
+──────────────────────────────────────────────
+
+POST /render/{template_id}
+Content-Type: application/json
+
+{
+  "data": {
+    "so_hop_dong": "HĐ-2024-001",
+    "ngay_ky": "15",
+    "thang_ky": "01",
+    "nam_ky": "2025",
+    "dia_diem": "Hà Nội",
+    "ten_cong_ty": "Công ty TNHH ABC",
+    "dia_chi_cong_ty": "123 Đường XYZ, Hà Nội",
+    "nguoi_dai_dien": "Nguyễn Văn Giám Đốc",
+    "chuc_vu_dai_dien": "Giám đốc",
+    "ho_ten": "Trần Thị Nhân Viên",
+    "ngay_sinh": "01/01/1995",
+    "so_cccd": "001234567890",
+    "dia_chi": "456 Đường ABC, TP.HCM",
+    "co_phu_luc": true,
+    "ten_phu_luc": "Phụ lục lương thưởng",
+    "danh_sach_san_pham": [
+      {
+        "ten_san_pham": "Laptop Dell XPS",
+        "so_luong": "2",
+        "don_gia": "25.000.000 VND",
+        "thanh_tien": "50.000.000 VND"
+      },
+      {
+        "ten_san_pham": "Chuột không dây",
+        "so_luong": "5",
+        "don_gia": "500.000 VND",
+        "thanh_tien": "2.500.000 VND"
+      }
+    ],
+    "tong_tien": "52.500.000 VND"
+  },
+  "output_format": "pdf"
+}

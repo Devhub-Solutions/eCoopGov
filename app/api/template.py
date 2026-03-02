@@ -1,0 +1,189 @@
+"""
+Template API:
+  POST /templates/          - Upload template .docx → parse + AI label
+  GET  /templates/          - List tất cả templates
+  GET  /templates/{id}      - Chi tiết template
+  PATCH /templates/{id}/labels - Override labels
+  DELETE /templates/{id}    - Xóa template
+"""
+import shutil
+import uuid
+from pathlib import Path
+from typing import Optional
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
+from app.core.config import get_settings
+from app.core.database import get_db, Template
+from app.core.template_parser import parse_template
+from app.services.ai_service import generate_labels_with_ai
+from app.models.schema import (
+    TemplateCreateResponse, TemplateDetailResponse,
+    LabelConfigUpdate, TemplateMeta, FieldMeta, TableMeta
+)
+
+router = APIRouter(prefix="/templates", tags=["Templates"])
+settings = get_settings()
+
+
+@router.post("/", response_model=TemplateCreateResponse, status_code=status.HTTP_201_CREATED)
+async def upload_template(
+    file: UploadFile = File(..., description="File .docx template (Jinja2 syntax)"),
+    name: str = Form(..., description="Tên template"),
+    description: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Upload template .docx → tự động parse placeholder + AI generate labels tiếng Việt.
+    """
+    if not file.filename.endswith(".docx"):
+        raise HTTPException(status_code=400, detail="Chỉ chấp nhận file .docx")
+
+    # Lưu file
+    template_id = str(uuid.uuid4())
+    safe_filename = f"{template_id}_{file.filename}"
+    filepath = settings.UPLOAD_DIR / safe_filename
+
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Parse template
+    try:
+        parsed = parse_template(filepath)
+    except Exception as e:
+        filepath.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=f"Không thể parse template: {e}")
+
+    # AI generate labels cho tất cả keys
+    all_keys = [f["key"] for f in parsed["fields"]]
+    for table in parsed["tables"]:
+        all_keys.extend(table["columns"])
+
+    ai_labels = await generate_labels_with_ai(all_keys) if all_keys else {}
+
+    # Build metadata với labels
+    fields = [
+        FieldMeta(
+            key=f["key"],
+            label=ai_labels.get(f["key"], f["key"]),
+            type=f["type"],
+        )
+        for f in parsed["fields"]
+    ]
+
+    tables = [
+        TableMeta(
+            key=t["key"],
+            loop_var=t["loop_var"],
+            columns=t["columns"],
+            column_labels={col: ai_labels.get(col, col) for col in t["columns"]},
+        )
+        for t in parsed["tables"]
+    ]
+
+    metadata = TemplateMeta(fields=fields, tables=tables)
+
+    # Lưu vào DB
+    template = Template(
+        id=template_id,
+        name=name,
+        description=description,
+        filename=file.filename,
+        filepath=str(filepath),
+        field_metadata=metadata.model_dump(),
+        label_config={},
+    )
+    db.add(template)
+    await db.flush()
+    await db.refresh(template)  # load server-default values (created_at, etc.)
+
+    return TemplateCreateResponse(
+        id=template.id,
+        name=template.name,
+        description=template.description,
+        filename=template.filename,
+        metadata=metadata,
+        created_at=template.created_at,
+    )
+
+
+@router.get("/", response_model=list[TemplateDetailResponse])
+async def list_templates(db: AsyncSession = Depends(get_db)):
+    """Lấy danh sách tất cả templates."""
+    result = await db.execute(select(Template).order_by(Template.created_at.desc()))
+    templates = result.scalars().all()
+    return [_to_response(t) for t in templates]
+
+
+@router.get("/{template_id}", response_model=TemplateDetailResponse)
+async def get_template(template_id: str, db: AsyncSession = Depends(get_db)):
+    """Lấy chi tiết một template."""
+    template = await _get_or_404(template_id, db)
+    return _to_response(template)
+
+
+@router.patch("/{template_id}/labels", response_model=TemplateDetailResponse)
+async def update_labels(
+    template_id: str,
+    payload: LabelConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Override labels tiếng Việt cho template.
+    Cho phép user chỉnh sửa label nếu AI generate chưa đúng.
+    """
+    template = await _get_or_404(template_id, db)
+
+    # Merge với config cũ
+    current = template.label_config or {}
+    current.update(payload.labels)
+    template.label_config = current
+
+    # Cập nhật labels trong metadata
+    if template.field_metadata:
+        meta = template.field_metadata
+        for field in meta.get("fields", []):
+            if field["key"] in payload.labels:
+                field["label"] = payload.labels[field["key"]]
+        for table in meta.get("tables", []):
+            for col in table.get("columns", []):
+                if col in payload.labels:
+                    table["column_labels"][col] = payload.labels[col]
+        template.field_metadata = meta
+
+    await db.flush()
+    return _to_response(template)
+
+
+@router.delete("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_template(template_id: str, db: AsyncSession = Depends(get_db)):
+    """Xóa template và file liên quan."""
+    template = await _get_or_404(template_id, db)
+
+    # Xóa file
+    Path(template.filepath).unlink(missing_ok=True)
+
+    await db.execute(delete(Template).where(Template.id == template_id))
+
+
+# ─── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _get_or_404(template_id: str, db: AsyncSession) -> Template:
+    result = await db.execute(select(Template).where(Template.id == template_id))
+    template = result.scalar_one_or_none()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template không tồn tại")
+    return template
+
+
+def _to_response(t: Template) -> TemplateDetailResponse:
+    meta_raw = t.field_metadata or {"fields": [], "tables": []}
+    return TemplateDetailResponse(
+        id=t.id,
+        name=t.name,
+        description=t.description,
+        filename=t.filename,
+        metadata=TemplateMeta(**meta_raw),
+        label_config=t.label_config or {},
+        created_at=t.created_at,
+    )
