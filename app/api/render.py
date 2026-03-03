@@ -6,9 +6,11 @@ Render API:
   GET  /render/jobs/{job_id}/download - Download kết quả
 """
 import uuid
+import hashlib
+import json as _json
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -17,10 +19,34 @@ from app.core.config import get_settings
 from app.core.database import get_db, Template, RenderJob, RenderStatus
 from app.services.docx_service import render_docx
 from app.services.pdf_service import convert_to_pdf
-from app.models.schema import RenderRequest, RenderJobResponse, RenderJobStatus
+from app.models.schema import RenderRequest, RenderJobResponse, RenderJobStatus, RenderJobListItem
 
 router = APIRouter(prefix="/render", tags=["Render"])
 settings = get_settings()
+
+
+def _compute_hash(template_id: str, data: dict, output_format: str) -> str:
+    """SHA-256 của (template_id + sorted JSON data + output_format) để detect duplicate renders."""
+    payload = _json.dumps(
+        {"template_id": template_id, "data": data, "fmt": output_format},
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def _find_cached_job(h: str, db: AsyncSession) -> RenderJob | None:
+    """Tìm job DONE có cùng hash và file output còn tồn tại."""
+    result = await db.execute(
+        select(RenderJob)
+        .where(RenderJob.payload_hash == h, RenderJob.status == RenderStatus.DONE)
+        .order_by(RenderJob.created_at.desc())
+        .limit(1)
+    )
+    job = result.scalar_one_or_none()
+    if job and job.output_path and Path(job.output_path).exists():
+        return job
+    return None
 
 
 @router.post("/{template_id}", summary="Render sync – trả về file ngay")
@@ -31,10 +57,31 @@ async def render_sync(
 ):
     """
     Render template với dữ liệu → trả về file PDF/DOCX ngay.
-    Phù hợp cho file nhỏ, timeout thấp.
+    Nếu cùng hash (template + data + format) đã được render trước đó, trả về file cache.
     """
     template = await _get_template_or_404(template_id, db)
+
+    h = _compute_hash(template_id, payload.data, payload.output_format)
+    cached = await _find_cached_job(h, db)
+    if cached:
+        output_path = Path(cached.output_path)
+        media_type = "application/pdf" if output_path.suffix == ".pdf" else \
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return FileResponse(path=str(output_path), media_type=media_type, filename=output_path.name)
+
     output_path = await _do_render(template, payload)
+
+    # Lưu job DONE để cache cho lần sau
+    job = RenderJob(
+        id=str(uuid.uuid4()),
+        template_id=template_id,
+        status=RenderStatus.DONE,
+        input_data={"data": payload.data, "output_format": payload.output_format},
+        output_path=str(output_path),
+        payload_hash=h,
+        completed_at=datetime.now(timezone.utc),
+    )
+    db.add(job)
 
     media_type = "application/pdf" if payload.output_format == "pdf" else \
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -57,14 +104,30 @@ async def render_async(
     """
     Tạo render job chạy background. Phù hợp cho file lớn, batch processing.
     Poll GET /render/jobs/{job_id} để kiểm tra status.
+    Nếu cùng hash đã render xong, trả về job cũ ngay (cached=True).
     """
     await _get_template_or_404(template_id, db)
+
+    h = _compute_hash(template_id, payload.data, payload.output_format)
+    cached = await _find_cached_job(h, db)
+    if cached:
+        return RenderJobResponse(
+            job_id=cached.id,
+            template_id=cached.template_id,
+            status=RenderJobStatus.DONE,
+            download_url=f"/render/jobs/{cached.id}/download",
+            created_at=cached.created_at,
+            completed_at=cached.completed_at,
+            payload_hash=h,
+            cached=True,
+        )
 
     job = RenderJob(
         id=str(uuid.uuid4()),
         template_id=template_id,
         status=RenderStatus.PENDING,
         input_data={"data": payload.data, "output_format": payload.output_format},
+        payload_hash=h,
     )
     db.add(job)
     await db.flush()
@@ -77,7 +140,39 @@ async def render_async(
         template_id=template_id,
         status=RenderJobStatus.PENDING,
         created_at=job.created_at,
+        payload_hash=h,
     )
+
+
+@router.get("/jobs/", response_model=list[RenderJobListItem], summary="List render jobs gần đây")
+async def list_jobs(
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lấy danh sách render jobs, mới nhất trước, kèm tên template."""
+    stmt = (
+        select(RenderJob, Template.name.label("template_name"))
+        .join(Template, RenderJob.template_id == Template.id, isouter=True)
+        .order_by(RenderJob.created_at.desc())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+    return [
+        RenderJobListItem(
+            job_id=row[0].id,
+            template_id=row[0].template_id,
+            template_name=row[1],
+            status=RenderJobStatus(row[0].status),
+            output_format=(row[0].input_data or {}).get("output_format", "pdf"),
+            error_message=row[0].error_message,
+            created_at=row[0].created_at,
+            completed_at=row[0].completed_at,
+            download_url=f"/render/jobs/{row[0].id}/download" if row[0].status == RenderStatus.DONE else None,
+            payload_hash=row[0].payload_hash,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/jobs/{job_id}", response_model=RenderJobResponse)
@@ -101,7 +196,11 @@ async def get_job_status(job_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/jobs/{job_id}/download", summary="Download kết quả render")
-async def download_job_result(job_id: str, db: AsyncSession = Depends(get_db)):
+async def download_job_result(
+    job_id: str,
+    inline: bool = Query(False, description="True = xem trong trình duyệt (PDF)"),
+    db: AsyncSession = Depends(get_db)
+):
     """Download file output của render job."""
     job = await _get_job_or_404(job_id, db)
 
@@ -115,6 +214,12 @@ async def download_job_result(job_id: str, db: AsyncSession = Depends(get_db)):
     media_type = "application/pdf" if output_path.suffix == ".pdf" else \
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+    if inline and output_path.suffix == ".pdf":
+        return FileResponse(
+            path=str(output_path),
+            media_type=media_type,
+            headers={"Content-Disposition": "inline"},
+        )
     return FileResponse(path=str(output_path), media_type=media_type, filename=output_path.name)
 
 

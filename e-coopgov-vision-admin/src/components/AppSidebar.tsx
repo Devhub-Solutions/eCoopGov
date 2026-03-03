@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   FileText,
@@ -7,21 +7,35 @@ import {
   Settings,
   ChevronLeft,
   FileCode2,
+  LogOut,
+  User,
+  Truck,
+  Users,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/templates", icon: FileText, label: "Templates" },
   { to: "/render", icon: Printer, label: "Render" },
   { to: "/jobs", icon: ListChecks, label: "Jobs" },
+  { to: "/phuong-tien", icon: Truck, label: "Phương tiện" },
+  { to: "/lai-xe", icon: Users, label: "Lái xe" },
   { to: "/settings", icon: Settings, label: "Cấu hình" },
 ];
 
 export function AppSidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+
+  function handleLogout() {
+    logout();
+    navigate("/login");
+  }
 
   return (
     <aside
@@ -66,6 +80,39 @@ export function AppSidebar() {
           );
         })}
       </nav>
+
+      {/* User info + logout */}
+      {user && (
+        <div className="border-t border-sidebar-border px-2 py-3 space-y-1">
+          <div
+            className={cn(
+              "flex items-center gap-3 px-3 py-2 rounded-lg",
+              collapsed ? "justify-center" : ""
+            )}
+          >
+            <div className="w-7 h-7 rounded-full bg-sidebar-accent flex items-center justify-center shrink-0">
+              <User className="w-3.5 h-3.5 text-sidebar-foreground/60" />
+            </div>
+            {!collapsed && (
+              <div className="animate-slide-in min-w-0">
+                <p className="text-xs font-medium truncate">{user.full_name ?? user.username}</p>
+                <p className="text-[10px] text-sidebar-foreground/50 truncate">{user.email}</p>
+              </div>
+            )}
+          </div>
+          <button
+            onClick={handleLogout}
+            className={cn(
+              "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-destructive transition-colors",
+              collapsed ? "justify-center" : ""
+            )}
+            title="Đăng xuất"
+          >
+            <LogOut className="w-[18px] h-[18px] shrink-0" />
+            {!collapsed && <span className="animate-slide-in">Đăng xuất</span>}
+          </button>
+        </div>
+      )}
 
       {/* Collapse toggle */}
       <button

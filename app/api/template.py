@@ -8,11 +8,13 @@ Template API:
 """
 import shutil
 import uuid
+import copy
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
+from sqlalchemy.orm.attributes import flag_modified
 from app.core.config import get_settings
 from app.core.database import get_db, Template
 from app.core.template_parser import parse_template
@@ -135,22 +137,25 @@ async def update_labels(
     """
     template = await _get_or_404(template_id, db)
 
-    # Merge với config cũ
-    current = template.label_config or {}
-    current.update(payload.labels)
-    template.label_config = current
+    # Ghi đè bằng dict MỚI để SQLAlchemy phát hiện thay đổi JSON column
+    template.label_config = {**(template.label_config or {}), **payload.labels}
+    flag_modified(template, "label_config")
 
-    # Cập nhật labels trong metadata
+    # Cập nhật labels trong metadata — deep copy để tạo object mới
     if template.field_metadata:
-        meta = template.field_metadata
+        meta = copy.deepcopy(template.field_metadata)
         for field in meta.get("fields", []):
             if field["key"] in payload.labels:
                 field["label"] = payload.labels[field["key"]]
         for table in meta.get("tables", []):
             for col in table.get("columns", []):
-                if col in payload.labels:
+                col_key = f"{table['key']}.{col}"
+                if col_key in payload.labels:
+                    table["column_labels"][col] = payload.labels[col_key]
+                elif col in payload.labels:
                     table["column_labels"][col] = payload.labels[col]
         template.field_metadata = meta
+        flag_modified(template, "field_metadata")
 
     await db.flush()
     return _to_response(template)

@@ -80,6 +80,22 @@ class RenderJobResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
+    payload_hash: Optional[str] = None
+    cached: bool = False
+
+
+class RenderJobListItem(BaseModel):
+    """Lightweight job entry cho danh sách, kèm tên template."""
+    job_id: str
+    template_id: str
+    template_name: Optional[str] = None
+    status: RenderJobStatus
+    output_format: str = "pdf"
+    error_message: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    download_url: Optional[str] = None
+    payload_hash: Optional[str] = None
 
 
 # ─── Config Models ─────────────────────────────────────────────────────────────

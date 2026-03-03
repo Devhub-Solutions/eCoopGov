@@ -67,6 +67,7 @@ class RenderJob(Base):
     input_data = Column(JSON, nullable=False)
     output_path = Column(String(500), nullable=True)
     error_message = Column(Text, nullable=True)
+    payload_hash = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -86,6 +87,7 @@ async def init_db():
     from app.models import fleet_models  # noqa: F401
     import functools
     from sqlalchemy.exc import OperationalError
+    from sqlalchemy import text
     async with engine.begin() as conn:
         try:
             await conn.run_sync(functools.partial(Base.metadata.create_all, checkfirst=True))
@@ -95,3 +97,18 @@ async def init_db():
                 pass
             else:
                 raise
+
+        # Add payload_hash column if not exists (safe migration)
+        try:
+            await conn.execute(
+                text("ALTER TABLE render_jobs ADD COLUMN payload_hash VARCHAR(64) NULL")
+            )
+        except Exception:
+            pass  # Column already exists
+
+        try:
+            await conn.execute(
+                text("ALTER TABLE render_jobs ADD INDEX idx_payload_hash (payload_hash)")
+            )
+        except Exception:
+            pass  # Index already exists
