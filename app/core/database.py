@@ -88,14 +88,29 @@ async def init_db():
     import functools
     from sqlalchemy.exc import OperationalError
     from sqlalchemy import text
+    import asyncio
+
     async with engine.begin() as conn:
-        try:
-            await conn.run_sync(functools.partial(Base.metadata.create_all, checkfirst=True))
-        except OperationalError as e:
-            # MySQL error 1050: "Table already exists" — safe to ignore in multi-worker startup
-            if "1050" in str(e.orig) or "already exists" in str(e.orig).lower():
-                pass
-            else:
+        # metadata.create_all occasionally fails with MySQL 1684 when the
+        # table definition is being modified by another connection.  This can
+        # happen when multiple containers start simultaneously or a manual
+        # migration runs.  We retry a few times rather than letting the
+        # entire application crash.
+        for attempt in range(5):
+            try:
+                await conn.run_sync(functools.partial(Base.metadata.create_all, checkfirst=True))
+                break
+            except OperationalError as e:
+                msg = str(e.orig).lower()
+                if "1050" in msg or "already exists" in msg:
+                    # harmless duplicate table error
+                    break
+                if "1684" in msg or "being modified" in msg:
+                    # concurrent DDL, try again after delay
+                    if attempt < 4:
+                        await asyncio.sleep(1)
+                        continue
+                # anything else; re‑raise
                 raise
 
         # Add payload_hash column if not exists (safe migration)

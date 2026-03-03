@@ -31,9 +31,14 @@ COPY . .
 # Tạo thư mục storage
 RUN mkdir -p storage/uploads storage/outputs storage/temp
 
-# Non-root user cho security
+# Non-root user cho security (created but we will drop privileges in entrypoint)
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
-USER appuser
+
+# copy entrypoint script and make executable
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 
 EXPOSE 8000
 
