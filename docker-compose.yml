@@ -56,6 +56,25 @@ services:
       retries: 3
       start_period: 15s
 
+  frontend:
+    build: ./e-coopgov-vision-admin
+    restart: unless-stopped
+    volumes:
+      - ./e-coopgov-vision-admin:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://api:3000
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   nginx:
     image: nginx:alpine
     restart: unless-stopped
@@ -65,6 +84,7 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - api
+      - frontend
     profiles:
       - production  # docker compose --profile production up
 
